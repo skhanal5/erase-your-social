@@ -1,8 +1,15 @@
-"""Unlike all liked tweets for a given X/Twitter account."""
+"""Unlike all liked tweets for a given X/Twitter account.
+
+Run with:
+
+    uv run -m erase_your_social.x.unlike_tweets
+"""
+
+import time
 
 from playwright.sync_api import Page, sync_playwright
 
-from session import (
+from .session import (
     DELAY_AFTER_PAGE_LOAD,
     DELAY_AFTER_SCROLL,
     DELAY_BETWEEN_ACTIONS,
@@ -12,6 +19,10 @@ from session import (
     ensure_logged_in,
     human_delay,
 )
+
+# Maximum total runtime before warning and exiting (avoids infinite loops on
+# CAPTCHA pages or when the session has silently expired).
+MAX_SESSION_SECONDS = 30 * 60
 
 
 def unlike_visible_tweets(page: Page, running_total: int) -> tuple[int, int]:
@@ -46,12 +57,17 @@ def unlike_visible_tweets(page: Page, running_total: int) -> tuple[int, int]:
         batch += 1
         running_total += 1
         print(f"Unliked tweet #{running_total}")
+        # Let X's server update the DOM so the button changes from
+        # data-testid="unlike" to "like". Without this pause the same
+        # button can be re-liked then unliked in a flicker loop.
+        human_delay(0.5, jitter_ratio=0.2)
         human_delay(DELAY_BETWEEN_ACTIONS)
 
     return batch, running_total
 
 
 def unlike_all_tweets(username: str, browser: BrowserType = "firefox") -> None:
+    start_time = time.monotonic()
     likes_url = f"https://x.com/{username}/likes"
 
     with sync_playwright() as p:
@@ -71,6 +87,15 @@ def unlike_all_tweets(username: str, browser: BrowserType = "firefox") -> None:
             print("\nStarting to unlike tweets... (press Ctrl+C to stop early)\n")
 
             while True:
+                elapsed = time.monotonic() - start_time
+                if elapsed > MAX_SESSION_SECONDS:
+                    print(
+                        f"\nSession reached {MAX_SESSION_SECONDS // 60} min. "
+                        f"Stopped after unliking {total_unliked} tweets. "
+                        f"Run again if more likes remain."
+                    )
+                    break
+
                 batch, total_unliked = unlike_visible_tweets(page, total_unliked)
 
                 if batch == 0:

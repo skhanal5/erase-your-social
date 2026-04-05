@@ -1,5 +1,6 @@
-"""Shared Playwright session helpers for X (cookies → storage state, browser context)."""
+"""Shared Playwright session helpers for X (cookies -> storage state, browser context)."""
 
+import fcntl
 import json
 import random
 import time
@@ -35,12 +36,12 @@ def resolve_cookies_file() -> Path:
 
 def normalize_same_site(raw: object) -> str:
     if raw is None:
-        return "Lax"
+        return "None"
     if isinstance(raw, bool):
         return "Lax"
     text = str(raw).strip()
     if not text:
-        return "Lax"
+        return "None"
     key = text.lower().replace("-", "_")
     if key in ("lax", "unspecified"):
         return "Lax"
@@ -53,7 +54,7 @@ def normalize_same_site(raw: object) -> str:
 
 def load_cookies_into_storage_state(
     cookies_file: Path, storage_state_file: Path
-) -> None:
+) -> str:
     raw = json.loads(cookies_file.read_text())
     storage_state = {
         "cookies": [
@@ -72,7 +73,7 @@ def load_cookies_into_storage_state(
         "origins": [],
     }
     storage_state_file.write_text(json.dumps(storage_state, indent=2))
-    print(f"Session saved to {storage_state_file}")
+    return f"Session saved to {storage_state_file}"
 
 
 def storage_state_for_playwright(path: Path) -> dict:
@@ -88,7 +89,24 @@ def ensure_storage_state() -> None:
         return
     cookies_file = resolve_cookies_file()
     print("Converting cookies to session state...")
-    load_cookies_into_storage_state(cookies_file, STORAGE_STATE_FILE)
+    lock_path = STORAGE_STATE_FILE.with_suffix(".lock")
+    with open(lock_path, "w") as lf:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            while not STORAGE_STATE_FILE.exists():
+                time.sleep(0.2)
+            return
+        try:
+            if STORAGE_STATE_FILE.exists():
+                return
+            load_cookies_into_storage_state(cookies_file, STORAGE_STATE_FILE)
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 @contextmanager
