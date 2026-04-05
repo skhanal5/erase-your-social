@@ -46,7 +46,8 @@ The script `unlike_tweets.py` opens X in a **visible** Playwright browser, loads
 From the repository root:
 
 ```bash
-uv run src/erase_your_social/x/unlike_tweets.py
+uv run -m erase_your_social.x.unlike_tweets
+uv run -m erase_your_social.x.delete_tweets
 ```
 
 You will be prompted for your X handle (without `@`) and for `firefox` or `chromium`. Keep the automated browser window **in the foreground** enough that it can scroll and click; avoid using that same window manually while the script runs. You can stop with **Ctrl+C** at any time.

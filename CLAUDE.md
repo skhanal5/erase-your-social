@@ -14,8 +14,8 @@ uv sync
 uv run playwright install firefox   # or chromium
 
 # Run scripts
-uv run src/erase_your_social/x/unlike_tweets.py
-uv run src/erase_your_social/x/delete_tweets.py
+uv run -m erase_your_social.x.unlike_tweets
+uv run -m erase_your_social.x.delete_tweets
 
 # Lint/format (via pre-commit or directly)
 uv run ruff check --fix

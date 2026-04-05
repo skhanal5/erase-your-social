@@ -9,15 +9,20 @@ was informed by a browser-console script shared by Don McCurdy:
   https://gist.github.com/donmccurdy/c7dbf813e64e2af9c745f9f446c1ee90
 
 This file is a separate Playwright implementation, not a copy of that gist.
+
+Run with:
+
+    uv run -m erase_your_social.x.delete_tweets
 """
 
 import re
+import time
 from typing import Literal
 from urllib.parse import urlparse
 
 from playwright.sync_api import Locator, Page, sync_playwright
 
-from session import (
+from .session import (
     DELAY_AFTER_PAGE_LOAD,
     DELAY_AFTER_SCROLL,
     DELAY_BETWEEN_ACTIONS,
@@ -29,6 +34,15 @@ from session import (
 )
 
 FeedMode = Literal["posts", "replies"]
+
+# Maximum total runtime before warning and exiting (avoids infinite loops on
+# CAPTCHA pages or when the session has silently expired).
+MAX_SESSION_SECONDS = 30 * 60
+
+# How many consecutive "stuck" articles to tolerate before giving up on the
+# current batch. Raised from 5 because replies feeds are full of other people's
+# tweets interspersed with the user's own content.
+MAX_STUCK = 15
 
 
 def _normalize_username(username: str) -> str:
@@ -114,8 +128,10 @@ def _unrepost_from_article(page: Page, article: Locator) -> bool:
             if undo.count() > 0:
                 undo.first.click(timeout=10_000)
                 human_delay(0.35, jitter_ratio=0.2)
+                _dismiss_dialogs(page)
                 return True
             page.keyboard.press("Escape")
+            _dismiss_dialogs(page)
             return False
         return False
 
@@ -126,7 +142,11 @@ def _unrepost_from_article(page: Page, article: Locator) -> bool:
         if confirm.count() > 0:
             confirm.first.wait_for(state="visible", timeout=10_000)
             confirm.first.click(timeout=10_000)
+            _dismiss_dialogs(page)
             return True
+
+    # Nothing matched — make sure no stale menu stays open.
+    _dismiss_dialogs(page)
     return False
 
 
@@ -143,26 +163,47 @@ def _delete_from_article(page: Page, article: Locator) -> bool:
     delete_item = page.get_by_role("menuitem", name=re.compile(r"^delete$", re.I))
     if delete_item.count() == 0:
         page.keyboard.press("Escape")
+        _dismiss_dialogs(page)
         return False
 
     delete_item.first.click(timeout=10_000)
     human_delay(0.5, jitter_ratio=0.2)
 
     confirm = page.locator('[data-testid="confirmationSheetConfirm"]')
-    confirm.wait_for(state="visible", timeout=10_000)
-    confirm.click(timeout=10_000)
+    try:
+        confirm.wait_for(state="visible", timeout=10_000)
+        confirm.click(timeout=10_000)
+    except Exception:
+        page.keyboard.press("Escape")
+        _dismiss_dialogs(page)
+        return False
     return True
 
 
-def _process_next_own_content(page: Page, username: str) -> str:
+def _dismiss_dialogs(page: Page) -> None:
+    """Press Escape and wait briefly to clear any lingering menus/sheets."""
+    page.keyboard.press("Escape")
+    human_delay(0.2, jitter_ratio=0.1)
+
+
+# Process result sentinels.
+_RESULT_DONE = "done"
+_RESULT_REPOST = "repost"
+_RESULT_POST = "post"
+_RESULT_STUCK = "stuck"
+
+
+def _process_next_own_content(
+    page: Page, username: str, *, remove_reposts: bool
+) -> str:
     """Find the next deletable *yours* card or own repost; skip OP tweets in threads.
 
-    Returns 'done', 'repost', 'post', or 'stuck'.
+    Returns one of the ``_RESULT_*`` sentinels.
     """
     articles = page.locator('article[data-testid="tweet"]')
     n = articles.count()
     if n == 0:
-        return "done"
+        return _RESULT_DONE
 
     want = _normalize_username(username)
 
@@ -180,8 +221,9 @@ def _process_next_own_content(page: Page, username: str) -> str:
             except Exception:
                 continue
             if _is_own_repost_or_retweet_context(label):
-                if _unrepost_from_article(page, article):
-                    return "repost"
+                if remove_reposts and _unrepost_from_article(page, article):
+                    return _RESULT_REPOST
+                # User chose to keep reposts — intentionally skip.
                 continue
 
         handle = _article_primary_handle(article)
@@ -189,31 +231,35 @@ def _process_next_own_content(page: Page, username: str) -> str:
             continue
 
         if _delete_from_article(page, article):
-            return "post"
+            return _RESULT_POST
 
-    return "stuck"
+    return _RESULT_STUCK
 
 
 def delete_visible_posts(
-    page: Page, username: str, running_total: int
+    page: Page,
+    username: str,
+    running_total: int,
+    *,
+    remove_reposts: bool,
 ) -> tuple[int, int]:
     batch = 0
     consecutive_stuck = 0
-    max_stuck = 5
 
     while True:
-        result = _process_next_own_content(page, username)
-        if result == "done":
+        result = _process_next_own_content(
+            page, username, remove_reposts=remove_reposts
+        )
+        if result == _RESULT_DONE:
             break
-        if result in ("repost", "post"):
+        if result in (_RESULT_REPOST, _RESULT_POST):
             consecutive_stuck = 0
             batch += 1
             running_total += 1
-            label = "repost" if result == "repost" else "post/reply"
+            label = "repost" if result == _RESULT_REPOST else "post/reply"
             print(f"Removed {label} #{running_total}")
             human_delay(DELAY_BETWEEN_ACTIONS)
             continue
-
         consecutive_stuck += 1
         print(
             "  no matching cards in view (others' tweets, blocked menu); nudging scroll…"
@@ -221,7 +267,7 @@ def delete_visible_posts(
         page.keyboard.press("Escape")
         page.evaluate("window.scrollBy(0, 400)")
         human_delay(DELAY_ON_RETRY_NUDGE)
-        if consecutive_stuck >= max_stuck:
+        if consecutive_stuck >= MAX_STUCK:
             print("  too many stuck cards in a row; scroll the timeline and retry.")
             break
 
@@ -233,7 +279,10 @@ def delete_posts_from_profile(
     browser: BrowserType = "firefox",
     *,
     mode: FeedMode = "replies",
+    remove_reposts: bool = True,
 ) -> None:
+    start_time = time.monotonic()
+
     with sync_playwright() as p:
         with browser_context(p, browser) as context:
             page = context.new_page()
@@ -251,8 +300,17 @@ def delete_posts_from_profile(
             )
 
             while True:
+                elapsed = time.monotonic() - start_time
+                if elapsed > MAX_SESSION_SECONDS:
+                    print(
+                        f"\nSession reached {MAX_SESSION_SECONDS // 60} min. "
+                        f"Stopped after removing {total_removed} items. "
+                        f"Run again if more posts remain."
+                    )
+                    break
+
                 batch, total_removed = delete_visible_posts(
-                    page, username, total_removed
+                    page, username, total_removed, remove_reposts=remove_reposts
                 )
 
                 if batch == 0:
@@ -282,4 +340,8 @@ if __name__ == "__main__":
         or "replies"
     )
     mode: FeedMode = "posts" if mode_in.startswith("p") else "replies"
-    delete_posts_from_profile(username, browser, mode=mode)
+    repost_in = input("Also remove your own reposts/retweets? [Y/n]: ").strip().lower()
+    remove_reposts = repost_in not in ("n", "no")
+    delete_posts_from_profile(
+        username, browser, mode=mode, remove_reposts=remove_reposts
+    )
