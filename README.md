@@ -39,9 +39,18 @@ If you **re-export** cookies after they expire, delete `storage_state.json` so i
 
 ### Unlike tweets
 
-The script `unlike_tweets.py` opens X in a **visible** Playwright browser, loads your **likes** timeline (`/yourname/likes`), and clicks each **Unlike** control until the page stops offering new ones.
+The `unlike_tweets.py` script opens X in a **visible** Playwright browser, loads your **likes** timeline (`/yourname/likes`), and clicks each **Unlike** control until the page stops offering new ones.
 
-#### How to run
+### Delete tweets
+
+The `delete_tweets.py` script opens your profile feed and deletes your own content (posts, replies, and optionally reposts). You'll be prompted for:
+
+- **Feed mode** — `replies` (default) to target reply threads only, or `posts` for the full profile feed.
+- **Remove reposts** — whether to also undo your own reposts/retweets (defaults to yes). Prefer the `replies` feed if you only want replies removed.
+
+The DOM flow was informed by a [browser-console script](https://gist.github.com/donmccurdy/c7dbf813e64e2af9c745f9f446c1ee90) from Don McCurdy.
+
+### How to run
 
 From the repository root:
 
