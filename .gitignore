@@ -12,3 +12,14 @@
 .env.development.local
 .env.test.local
 .env.production.local
+
+# Caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+
+.session/
