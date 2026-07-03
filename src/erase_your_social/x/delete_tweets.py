@@ -334,7 +334,7 @@ if __name__ == "__main__":
         input("Browser to use (firefox/chromium) [firefox]: ").strip() or "firefox"
     )
     mode_in = (
-        input("Feed: replies only or all profile posts? [replies/posts]: ")
+        input("Delete: replies to others or your own posts only? [replies/posts]: ")
         .strip()
         .lower()
         or "replies"
